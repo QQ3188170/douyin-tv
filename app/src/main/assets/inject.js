@@ -127,9 +127,10 @@
         hideLoginOverlay();
     }
 
-    // MutationObserver for SPA navigation — only block live + unmute
+    // MutationObserver for SPA navigation — block live + unmute, and try 连播 as soon as markup appears
     var observer = new MutationObserver(function() {
         maintain();
+        tryAutoPlay();
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     setInterval(maintain, 2000);
@@ -168,7 +169,10 @@
     }
 
     function findXgSwitch() {
-        // The VISIBLE xgplayer-autoplay-setting icon and its xg-switch button
+        // ONLY the VISIBLE control-bar copy responds to a click that STICKS. Clicking an off-screen
+        // settings-panel copy toggles the class but the player ignores it, so we require the switch
+        // to be viewport-visible. enableAutoPlay() keeps the bar awake so a visible copy is almost
+        // always available; if none is visible we return null and retry next tick.
         var icons = document.querySelectorAll('.xgplayer-autoplay-setting');
         for (var i = 0; i < icons.length; i++) {
             var r = icons[i].getBoundingClientRect();
@@ -269,11 +273,13 @@
 
     function wakeControls() {
         // The control bar (with the 连播 switch) auto-hides when idle. A synthetic
-        // pointermove/mousemove on the <video> bubbles up to the xgplayer root and
-        // makes the bar (and the switch) appear.
+        // pointermove/mousemove on the xgplayer root makes the bar (and the switch) appear.
+        // We dispatch on the player root first (not just <video>) because that is what xgplayer
+        // listens to for show/hide of the controls.
         try {
             var v = document.querySelector('video');
-            var target = v || document.body || document.documentElement;
+            var player = document.querySelector('.xgplayer');
+            var target = player || v || document.body || document.documentElement;
             var r = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
             var opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
             var seq = ['pointermove', 'mousemove'];
@@ -289,25 +295,14 @@
 
     function enableAutoPlay() {
         try {
-            if (__autoPlayEnabled) return;
-            wakeControls();
-            // Preferred: xgplayer switch (verified structure)
             var btn = findXgSwitch();
-            if (btn) {
-                if (xgState(btn) === 'on') { __autoPlayEnabled = true; return; }
-                pressEl(btn);
-                return; // next interval re-checks; only presses again if still off (no oscillation)
-            }
-            // Fallback: generic label-based search
-            var label = findLabel('连播');
-            if (!label) return;
-            var state = readToggleState(label);
-            if (state === 'on') { __autoPlayEnabled = true; return; }
-            clickToggle(label);
-            if (state === 'unknown') {
-                if (__autoClickBest) { __autoPlayEnabled = true; }
-                else { __autoClickBest = true; }
-            }
+            if (!btn) { wakeControls(); return; }      // bar hidden -> wake, retry next tick
+            var st = xgState(btn);
+            if (st === 'on') { __autoPlayEnabled = true; return; }
+            if (__autoPlayEnabled) __autoPlayEnabled = false; // player reloaded & reset -> re-light
+            wakeControls();                              // make sure the bar is awake
+            btn = findXgSwitch();                        // re-grab (now visible)
+            if (btn && xgState(btn) === 'off') pressEl(btn);
         } catch (e) {}
     }
 
@@ -328,7 +323,28 @@
         setTimeout(switchToRecommend, 2000);
     });
 
-    // The 连播 toggle only appears ~30s after a video starts on slow boxes; retry on an interval.
-    setTimeout(enableAutoPlay, 3000);
-    setInterval(enableAutoPlay, 8000);
+    // Keep the control bar awake (~1s) so a VISIBLE 连播 copy is always present, and click it the
+    // moment it exists and is 'off'. Once lit, stop waking so the bar can auto-hide again. The
+    // 连播 class is updated by xgplayer ~900ms after the click, so the next tick confirms it.
+    var __apLastTry = 0;
+    function tryAutoPlay() {
+        var now = Date.now();
+        if (now - __apLastTry < 800) return;
+        __apLastTry = now;
+        enableAutoPlay();
+    }
+
+    setInterval(function () {
+        if (!__autoPlayEnabled) tryAutoPlay();
+    }, 1000);
+    // If the player reloads and 连播 gets reset, detect it and light it again.
+    setInterval(function () {
+        if (__autoPlayEnabled) {
+            var b = findXgSwitch();
+            if (b && xgState(b) === 'off') { __autoPlayEnabled = false; tryAutoPlay(); }
+        }
+    }, 5000);
+    setTimeout(enableAutoPlay, 1500);
+    setTimeout(enableAutoPlay, 4000);
+    setTimeout(enableAutoPlay, 9000);
 })();
