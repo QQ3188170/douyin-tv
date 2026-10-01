@@ -87,18 +87,6 @@ public class TvWebViewClient extends WebViewClient {
             }
         }
 
-        // Block heavy sprite images (>300KB CSS background images from Douyin static CDN)
-        // These are decorative sprites that waste memory on TV
-        if (url.contains("douyinstatic.com") && url.endsWith(".png")) {
-            // Let small images through, block large sprites
-            // Note: we can't know size before downloading, but these are typically
-            // 200-800KB sprite sheets. We'll use a heuristic:
-            // Block if URL contains patterns that look like sprite hashes
-            if (url.matches(".*[a-f0-9]{32}\\.png.*")) {
-                return BLOCKED_RESPONSE;
-            }
-        }
-
         return super.shouldInterceptRequest(view, request);
     }
 
@@ -139,9 +127,11 @@ public class TvWebViewClient extends WebViewClient {
 
     private String loadAsset(String name) {
         try (java.io.InputStream is = context.getAssets().open(name)) {
-            byte[] buf = new byte[is.available()];
-            is.read(buf);
-            return new String(buf, StandardCharsets.UTF_8);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+            return new String(bos.toByteArray(), StandardCharsets.UTF_8);
         } catch (Exception e) {
             return "";
         }

@@ -101,7 +101,7 @@
         // Find and click "推荐" link
         var links = document.querySelectorAll('a');
         for (var i = 0; i < links.length; i++) {
-            if (links[i].innerText?.trim() === '推荐') {
+            if (links[i].innerText && links[i].innerText.trim() === '推荐') {
                 links[i].click();
                 return;
             }
@@ -111,7 +111,9 @@
     // ==================== HIDE LOGIN OVERLAY ====================
     function hideLoginOverlay() {
         // Don't remove the login button itself, just remove blocking overlays
-        document.querySelectorAll('[class*="login-mask"],[class*="loginModal"],[class*="login-dialog"],[class*="login-guide"]').forEach(function(el) {
+        // Only hide the login backdrop/mask so it doesn't block interaction.
+        // Keep the login dialog/modal itself visible so the QR code can be scanned (see README).
+        document.querySelectorAll('[class*="login-mask"],[class*="login-guide"],[class*="login-backdrop"],[class*="login-bg"]').forEach(function(el) {
             if (el.style.position === 'fixed' || window.getComputedStyle(el).position === 'fixed') {
                 el.style.display = 'none';
             }
@@ -135,9 +137,188 @@
     // Passive scroll
     document.addEventListener('scroll', function(){}, {passive:true});
 
+    // ==================== ENABLE AUTO-PLAY (连播) ====================
+    // The 连播 control is an xgplayer (西瓜播放器) setting icon in the bottom-right control bar:
+    //   xg-icon.xgplayer-autoplay-setting.automatic-continuous
+    //     └ div.xgplayer-icon
+    //         └ div.xgplayer-setting-label
+    //             ├ button.xg-switch          <- the actual toggle ("lit" = class xg-switch-checked)
+    //             │   └ span.xg-switch-inner
+    //             └ span.xgplayer-setting-title "连播"
+    // Verified facts (via Chrome DevTools Protocol on the box):
+    //   * a plain el.click() does NOTHING — the handler needs a full pointer sequence
+    //     (pointerdown/mousedown/pointerup/mouseup/click)
+    //   * there are TWO copies in the DOM (bar + hidden settings panel below the viewport),
+    //     so we must pick the VISIBLE one
+    var __autoPlayEnabled = false;
+    var __autoClickBest = false;
+
+    function pressEl(el) {
+        // Full pointer sequence — plain .click() does not trigger the xgplayer handler
+        var r = el.getBoundingClientRect();
+        var opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+        var seq = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+        for (var i = 0; i < seq.length; i++) {
+            var t = seq[i], ev;
+            try {
+                ev = (t.indexOf('pointer') === 0 && window.PointerEvent) ? new PointerEvent(t, opts) : new MouseEvent(t, opts);
+            } catch (e) { ev = new MouseEvent(t, opts); }
+            el.dispatchEvent(ev);
+        }
+    }
+
+    function findXgSwitch() {
+        // The VISIBLE xgplayer-autoplay-setting icon and its xg-switch button
+        var icons = document.querySelectorAll('.xgplayer-autoplay-setting');
+        for (var i = 0; i < icons.length; i++) {
+            var r = icons[i].getBoundingClientRect();
+            if (r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight) {
+                var btn = icons[i].querySelector('button.xg-switch') || icons[i].querySelector('.xg-switch');
+                if (btn) return btn;
+            }
+        }
+        return null;
+    }
+
+    function xgState(btn) {
+        // "lit" = xg-switch-checked class (aria-checked is NOT in sync — ignore it)
+        var cls = (btn.className || '').toString();
+        if (/xg-switch-checked/.test(cls)) return 'on';
+        return 'off';
+    }
+
+    // Generic fallbacks (in case Douyin swaps the player markup)
+    function findLabel(txt) {
+        var best = null, bestLen = 1e9;
+        var all = document.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            var t = (el.textContent || '').trim();
+            if (t && t.indexOf(txt) !== -1 && t.length < bestLen) {
+                var r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight) {
+                    best = el; bestLen = t.length;
+                }
+            }
+        }
+        return best;
+    }
+
+    function contextHasText(node, txt) {
+        if (!node) return false;
+        var chain = [node];
+        var p = node.parentElement;
+        for (var i = 0; i < 3 && p; i++) { chain.push(p); p = p.parentElement; }
+        for (var j = 0; j < chain.length; j++) {
+            var c = chain[j];
+            if (c && c.textContent && c.textContent.indexOf(txt) !== -1) return true;
+            if (c && c.parentElement) {
+                var sibs = c.parentElement.children;
+                for (var k = 0; k < sibs.length; k++) {
+                    if (sibs[k].textContent && sibs[k].textContent.indexOf(txt) !== -1) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    function readToggleState(label) {
+        var nodes = [];
+        var n = label;
+        for (var i = 0; i < 4 && n; i++) { nodes.push(n); n = n.parentElement; }
+        if (label.parentElement) {
+            var sibs = label.parentElement.children;
+            for (var s = 0; s < sibs.length; s++) nodes.push(sibs[s]);
+        }
+        for (var a = 0; a < nodes.length; a++) {
+            var el = nodes[a];
+            if (!el || !el.getAttribute) continue;
+            var cls = (el.className || '').toString();
+            if (/xg-switch-checked|checked|is-on|is_on|switch-on|switch_on/i.test(cls)) return 'on';
+            if (/switch-off|switch_off/i.test(cls)) return 'off';
+            var ac = el.getAttribute('aria-checked');
+            var ap = el.getAttribute('aria-pressed');
+            var role = el.getAttribute('role');
+            if ((role === 'switch' || role === 'checkbox')) {
+                if (ac === 'false' || ap === 'false') return 'off';
+            }
+        }
+        return 'unknown';
+    }
+
+    function clickToggle(label) {
+        // 1) the xg-switch button next to the 连播 label (xgplayer structure)
+        var parent = label.parentElement;
+        if (parent) {
+            var btn = parent.querySelector('button.xg-switch') || parent.querySelector('.xg-switch');
+            if (btn) { pressEl(btn); return true; }
+            // 2) any non-label sibling
+            var kids = parent.children;
+            for (var j = 0; j < kids.length; j++) {
+                var kid = kids[j];
+                if (kid !== label && kid.tagName && kid.tagName.toLowerCase() !== 'script' && kid.tagName.toLowerCase() !== 'style') {
+                    pressEl(kid); return true;
+                }
+            }
+            // 3) the container itself
+            pressEl(parent); return true;
+        }
+        // 4) last resort: the label (bubbles up)
+        pressEl(label); return true;
+    }
+
+    function wakeControls() {
+        // The control bar (with the 连播 switch) auto-hides when idle. A synthetic
+        // pointermove/mousemove on the <video> bubbles up to the xgplayer root and
+        // makes the bar (and the switch) appear.
+        try {
+            var v = document.querySelector('video');
+            var target = v || document.body || document.documentElement;
+            var r = target.getBoundingClientRect ? target.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+            var opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+            var seq = ['pointermove', 'mousemove'];
+            for (var i = 0; i < seq.length; i++) {
+                var t = seq[i], ev;
+                try {
+                    ev = (t.indexOf('pointer') === 0 && window.PointerEvent) ? new PointerEvent(t, opts) : new MouseEvent(t, opts);
+                } catch (e) { ev = new MouseEvent(t, opts); }
+                target.dispatchEvent(ev);
+            }
+        } catch (e) {}
+    }
+
+    function enableAutoPlay() {
+        try {
+            if (__autoPlayEnabled) return;
+            wakeControls();
+            // Preferred: xgplayer switch (verified structure)
+            var btn = findXgSwitch();
+            if (btn) {
+                if (xgState(btn) === 'on') { __autoPlayEnabled = true; return; }
+                pressEl(btn);
+                return; // next interval re-checks; only presses again if still off (no oscillation)
+            }
+            // Fallback: generic label-based search
+            var label = findLabel('连播');
+            if (!label) return;
+            var state = readToggleState(label);
+            if (state === 'on') { __autoPlayEnabled = true; return; }
+            clickToggle(label);
+            if (state === 'unknown') {
+                if (__autoClickBest) { __autoPlayEnabled = true; }
+                else { __autoClickBest = true; }
+            }
+        } catch (e) {}
+    }
+
     // ==================== PAGE READY ====================
     function signalReady() {
         try { if (window.Android) window.Android.onPageReady(); } catch(e) {}
+        try {
+            setTimeout(enableAutoPlay, 1500);
+            setTimeout(enableAutoPlay, 5000);
+            setTimeout(enableAutoPlay, 10000);
+        } catch(e) {}
     }
     if (document.readyState === 'complete') signalReady();
     else window.addEventListener('load', function() {
@@ -146,4 +327,8 @@
         setTimeout(maintain, 1000);
         setTimeout(switchToRecommend, 2000);
     });
+
+    // The 连播 toggle only appears ~30s after a video starts on slow boxes; retry on an interval.
+    setTimeout(enableAutoPlay, 3000);
+    setInterval(enableAutoPlay, 8000);
 })();

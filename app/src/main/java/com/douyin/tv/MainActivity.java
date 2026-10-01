@@ -86,6 +86,12 @@ public class MainActivity extends Activity {
 
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
 
+        // Allow media (video) autoplay and unmuted playback without a real user gesture.
+        // TV remotes dispatch synthetic key events that the WebView does NOT treat as gestures,
+        // so leaving this at the default (true) blocks auto-advance to the next video and forces
+        // muted playback regardless of the JS unmute calls.
+        settings.setMediaPlaybackRequiresUserGesture(false);
+
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
@@ -280,10 +286,12 @@ public class MainActivity extends Activity {
     private String loadAssetMinified(String name) {
         try {
             java.io.InputStream is = getAssets().open(name);
-            byte[] buf = new byte[is.available()];
-            is.read(buf);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
             is.close();
-            String content = new String(buf, java.nio.charset.StandardCharsets.UTF_8);
+            String content = new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
             content = content.replaceAll("/\\*.*?\\*/", "");
             content = content.replaceAll("//[^\n]*", "");
             content = content.replaceAll("\\s+", " ");
